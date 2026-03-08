@@ -1,0 +1,288 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\{
+    Sale,
+    Purchase,
+    Product,
+    Expense,
+    CashRegister,
+    User,
+    Customer,
+    Supplier
+};
+use Illuminate\Support\Facades\Cache;
+
+class DashboardController extends Controller
+{
+    public function index()
+    {
+        $user = auth()->user();
+
+        // rôle principal utilisateur
+        $role = $user->roles->first()?->name ?? 'user';
+
+        /*
+        |--------------------------------------------------------------------------
+        | CACHE PAR UTILISATEUR + ROLE
+        |--------------------------------------------------------------------------
+        */
+        $cacheKey = 'dashboard.stats.' . $role . '.user.' . $user->id;
+
+        $data = Cache::remember($cacheKey, 60, function () use ($user, $role) {
+
+            $now = now();
+            $today = $now->copy()->startOfDay();
+            $weekStart = $now->copy()->startOfWeek();
+            $weekEnd = $now->copy()->endOfWeek();
+            $monthStart = $now->copy()->startOfMonth();
+            $year = $now->year;
+
+            /*
+            |--------------------------------------------------------------------------
+            | SALES
+            |--------------------------------------------------------------------------
+            */
+            $sales = null;
+
+            if ($user->can('view sales')) {
+                $sales = Sale::whereIn('status',['confirmed','paid'])
+                    ->selectRaw("
+                        SUM(total_amount) as total,
+                        SUM(CASE WHEN sale_date >= ? THEN total_amount ELSE 0 END) as today,
+                        SUM(CASE WHEN sale_date BETWEEN ? AND ? THEN total_amount ELSE 0 END) as week,
+                        SUM(CASE WHEN sale_date BETWEEN ? AND ? THEN total_amount ELSE 0 END) as month
+                    ", [$today,$weekStart,$weekEnd,$monthStart,$now])
+                    ->first();
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | PURCHASES
+            |--------------------------------------------------------------------------
+            */
+            $purchases = null;
+
+            if ($user->can('view purchases')) {
+                $purchases = Purchase::whereIn('status',['confirmed','paid'])
+                    ->selectRaw("
+                        SUM(total_amount) as total,
+                        SUM(CASE WHEN purchase_date >= ? THEN total_amount ELSE 0 END) as today,
+                        SUM(CASE WHEN purchase_date BETWEEN ? AND ? THEN total_amount ELSE 0 END) as month
+                    ", [$today,$monthStart,$now])
+                    ->first();
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | EXPENSES
+            |--------------------------------------------------------------------------
+            */
+            $expensesTotal = $user->can('view expenses')
+                ? Expense::where('status','approved')->sum('amount')
+                : 0;
+
+            $monthlyExpenses = $user->can('view expenses')
+                ? Expense::where('status','approved')
+                    ->whereBetween('expense_date',[$monthStart,$now])
+                    ->sum('amount')
+                : 0;
+
+            /*
+            |--------------------------------------------------------------------------
+            | STOCK ALERTS
+            |--------------------------------------------------------------------------
+            */
+            $lowStockProducts = $user->can('view products')
+                ? Product::whereColumn('stock_quantity','<=','minimum_stock')
+                    ->where('is_active',true)->count()
+                : 0;
+
+            $outOfStockProducts = $user->can('view products')
+                ? Product::where('stock_quantity','<=',0)
+                    ->where('is_active',true)->count()
+                : 0;
+
+            /*
+            |--------------------------------------------------------------------------
+            | PAYMENTS ALERTS
+            |--------------------------------------------------------------------------
+            */
+            $unpaidSales = $user->can('view sales')
+                ? Sale::where('due_amount','>',0)->count()
+                : 0;
+
+            $unpaidPurchases = $user->can('view purchases')
+                ? Purchase::where('due_amount','>',0)->count()
+                : 0;
+
+            /*
+            |--------------------------------------------------------------------------
+            | CLIENTS / SUPPLIERS
+            |--------------------------------------------------------------------------
+            */
+            $debtCustomers = $user->can('view customers')
+                ? Customer::where('current_balance','>',0)->count()
+                : 0;
+
+            $creditSuppliers = $user->can('view suppliers')
+                ? Supplier::where('current_balance','>',0)->count()
+                : 0;
+
+            /*
+            |--------------------------------------------------------------------------
+            | CASH REGISTER
+            |--------------------------------------------------------------------------
+            */
+            $openCashRegister = null;
+
+            if ($user->can('view cash_registers')) {
+                $openCashRegister = CashRegister::where('status','open')
+                    ->first([
+                        'id',
+                        'name',
+                        'opening_balance',
+                        'total_in',
+                        'total_out'
+                    ]);
+
+                if ($openCashRegister) {
+                    $openCashRegister->current_balance =
+                        $openCashRegister->opening_balance
+                        + $openCashRegister->total_in
+                        - $openCashRegister->total_out;
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | USERS
+            |--------------------------------------------------------------------------
+            */
+            $activeUsers = $user->can('view users')
+                ? User::where('is_active',true)->count()
+                : 0;
+
+            /*
+            |--------------------------------------------------------------------------
+            | RECENTS
+            |--------------------------------------------------------------------------
+            */
+            $recentSales = $user->can('view sales')
+                ? Sale::latest()->limit(5)
+                    ->get(['id','reference','total_amount','created_at'])
+                : collect();
+
+            $recentPurchases = $user->can('view purchases')
+                ? Purchase::latest()->limit(5)
+                    ->get(['id','reference','total_amount','created_at'])
+                : collect();
+
+            /*
+            |--------------------------------------------------------------------------
+            | CHARTS
+            |--------------------------------------------------------------------------
+            */
+            $salesChart = $user->can('view sales')
+                ? Sale::selectRaw('MONTH(sale_date) m, SUM(total_amount) t')
+                    ->whereYear('sale_date',$year)
+                    ->whereIn('status',['confirmed','paid'])
+                    ->groupBy('m')
+                    ->pluck('t','m')
+                : collect();
+
+            $purchaseChart = $user->can('view purchases')
+                ? Purchase::selectRaw('MONTH(purchase_date) m, SUM(total_amount) t')
+                    ->whereYear('purchase_date',$year)
+                    ->whereIn('status',['confirmed','paid'])
+                    ->groupBy('m')
+                    ->pluck('t','m')
+                : collect();
+
+            return [
+                'role' => $role,
+
+                'totalSales' => $sales->total ?? 0,
+                'todaySales' => $sales->today ?? 0,
+                'weekSales' => $sales->week ?? 0,
+                'monthlySales' => $sales->month ?? 0,
+
+                'totalPurchases' => $purchases->total ?? 0,
+                'todayPurchases' => $purchases->today ?? 0,
+                'monthPurchases' => $purchases->month ?? 0,
+
+                'totalExpenses' => $expensesTotal,
+                'monthlyExpenses' => $monthlyExpenses,
+
+                'profit' => ($sales->total ?? 0)
+                    - (($purchases->total ?? 0) + $expensesTotal),
+
+                'lowStockProducts' => $lowStockProducts,
+                'outOfStockProducts' => $outOfStockProducts,
+
+                'unpaidSales' => $unpaidSales,
+                'unpaidPurchases' => $unpaidPurchases,
+
+                'debtCustomers' => $debtCustomers,
+                'creditSuppliers' => $creditSuppliers,
+
+                'recentSales' => $recentSales,
+                'recentPurchases' => $recentPurchases,
+
+                'openCashRegister' => $openCashRegister,
+                'activeUsers' => $activeUsers,
+
+                'salesChart' => $salesChart,
+                'purchaseChart' => $purchaseChart,
+            ];
+        });
+
+        /*
+        |--------------------------------------------------------------------------
+        | DASHBOARD INTELLIGENT PAR ROLE
+        |--------------------------------------------------------------------------
+        */
+
+        switch ($role) {
+
+            case 'caissier':
+                $data = array_intersect_key($data, array_flip([
+                    'todaySales',
+                    'recentSales',
+                    'openCashRegister',
+                    'salesChart'
+                ]));
+                break;
+
+            case 'comptable':
+                $data = array_intersect_key($data, array_flip([
+                    'totalSales',
+                    'totalPurchases',
+                    'totalExpenses',
+                    'monthlyExpenses',
+                    'profit',
+                    'unpaidSales',
+                    'unpaidPurchases',
+                    'purchaseChart'
+                ]));
+                break;
+
+            case 'gestionnaire':
+                $data = array_intersect_key($data, array_flip([
+                    'lowStockProducts',
+                    'outOfStockProducts',
+                    'monthlySales',
+                    'recentPurchases'
+                ]));
+                break;
+
+            default:
+                // admin = tout
+                break;
+        }
+
+        return view('admin.dashboard', $data);
+    }
+}
