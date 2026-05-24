@@ -3,14 +3,12 @@ nixPkgs = [
   "php",
   "phpExtensions.bcmath",
   "phpExtensions.gd",
-  "composer",
-  "nodejs"
+  "composer"
 ]
 
 [phases.install]
 cmds = [
-  "composer install --no-dev --optimize-autoloader --ignore-platform-req=ext-bcmath --ignore-platform-req=ext-gd",
-  "npm install"
+  "composer install --no-dev --optimize-autoloader --ignore-platform-req=ext-bcmath --ignore-platform-req=ext-gd"
 ]
 
 [start]
