@@ -6,7 +6,7 @@
      x-transition>
 
 {{-- ======================================================
-ERROR ALERT (IMPORTANT 🔥)
+ERROR ALERT (IMPORTANT )
 ====================================================== --}}
 @if ($errors->any())
 <div class="bg-red-50 border border-red-200 text-red-700 px-6 py-4 rounded-2xl shadow-sm animate-fade-in">

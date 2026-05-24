@@ -16,19 +16,33 @@ use Illuminate\Support\Facades\Request;
 
 class AppServiceProvider extends ServiceProvider
 {
+    /*
+    |--------------------------------------------------------------------------
+    | REGISTER
+    | On cache uniquement l'ID (scalaire), jamais l'objet Eloquent.
+    | Le singleton résout toujours une instance fraîche depuis la DB.
+    |--------------------------------------------------------------------------
+    */
     public function register(): void
     {
         $this->app->singleton('company', function () {
-            return Cache::rememberForever('company_singleton', fn () => Company::first());
+            $id = Cache::rememberForever('company_id', fn () => Company::first()?->id);
+            return $id ? Company::find($id) : null;
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | BOOT
+    |--------------------------------------------------------------------------
+    */
     public function boot(): void
     {
         /*
-        |--------------------------------------------------------------------------
+        |----------------------------------------------------------------------
         | PARTAGE DES DONNÉES GLOBALES AUX VUES
-        |--------------------------------------------------------------------------
+        | On relit la DB à chaque requête via le singleton (pas de cache objet).
+        |----------------------------------------------------------------------
         */
         if (!app()->runningInConsole()) {
             View::composer([
@@ -36,37 +50,39 @@ class AppServiceProvider extends ServiceProvider
                 'layouts.guest',
                 'layouts.partials.*',
             ], function ($view) {
-                $company = Cache::rememberForever('company_singleton', function () {
-                    return Company::first();
-                });
-                $view->with('company', $company);
+                // app('company') résout le singleton ci-dessus → toujours frais
+                $view->with('company', app('company'));
             });
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | AUDIT OBSERVER — enregistré TOUJOURS (pas de condition auth)
-        |--------------------------------------------------------------------------
-        | L'observer lui-même utilise Auth::id() qui retourne null si non connecté
-        | On enregistre l'observer au boot, pas besoin d'attendre l'auth
+        |----------------------------------------------------------------------
+        | AUDIT OBSERVER
+        |----------------------------------------------------------------------
         */
         if ($this->app->runningInConsole()) {
             return;
         }
 
-        //  Enregistrer l'observer sur tous les modèles SANS condition auth
         static $loaded = false;
         if ($loaded) return;
         $loaded = true;
 
         foreach (File::files(app_path('Models')) as $file) {
             $class = 'App\\Models\\' . pathinfo($file, PATHINFO_FILENAME);
-            if (class_exists($class) && is_subclass_of($class, \Illuminate\Database\Eloquent\Model::class)) {
+            if (
+                class_exists($class) &&
+                is_subclass_of($class, \Illuminate\Database\Eloquent\Model::class)
+            ) {
                 $class::observe(AuditObserver::class);
             }
         }
 
-        //  Login / Logout
+        /*
+        |----------------------------------------------------------------------
+        | LOGIN / LOGOUT AUDIT
+        |----------------------------------------------------------------------
+        */
         Event::listen(Login::class, function (Login $event) {
             try {
                 AuditLog::create([

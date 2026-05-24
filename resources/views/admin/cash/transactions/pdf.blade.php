@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="fr">
 <head>
     <meta charset="utf-8">
     <title>Rapport Caisse - {{ $cashRegister->name }}</title>
@@ -11,20 +11,9 @@
             color: #2d3748;
         }
 
-        .header {
-            margin-bottom: 15px;
-        }
-
-        .company-name {
-            font-size: 18px;
-            font-weight: bold;
-        }
-
-        .company-info {
-            font-size: 11px;
-            color: #555;
-            margin-top: 3px;
-        }
+        .header       { margin-bottom: 15px; }
+        .company-name { font-size: 18px; font-weight: bold; }
+        .company-info { font-size: 11px; color: #555; margin-top: 3px; }
 
         hr {
             border: none;
@@ -32,13 +21,9 @@
             margin: 15px 0;
         }
 
-        h2 {
-            margin: 10px 0;
-        }
+        h2 { margin: 10px 0; }
 
-        .info p {
-            margin: 3px 0;
-        }
+        .info p { margin: 3px 0; }
 
         table {
             width: 100%;
@@ -60,19 +45,9 @@
             font-size: 11px;
         }
 
-        .right {
-            text-align: right;
-        }
-
-        .green {
-            color: #16a34a;
-            font-weight: bold;
-        }
-
-        .red {
-            color: #dc2626;
-            font-weight: bold;
-        }
+        .right  { text-align: right; }
+        .green  { color: #16a34a; font-weight: bold; }
+        .red    { color: #dc2626; font-weight: bold; }
 
         .summary {
             margin-top: 20px;
@@ -80,13 +55,8 @@
             padding: 10px;
         }
 
-        .summary table {
-            margin-top: 0;
-        }
-
-        .summary td {
-            padding: 6px;
-        }
+        .summary table { margin-top: 0; }
+        .summary td    { padding: 6px; }
 
         .total-final {
             border-top: 2px solid #000;
@@ -106,21 +76,28 @@
 
 <body>
 
+@php
+    // Variables extraites une seule fois
+    $currency    = company()?->currency ?? '';
+    $companyName = company()?->name ?? config('app.name');
+    $totalIn     = $totalIn  ?? 0;
+    $totalOut    = $totalOut ?? 0;
+    // Whitelist statut
+    $safeStatus  = in_array($cashRegister->status, ['open','closed'])
+        ? $cashRegister->status
+        : 'closed';
+    $statusLabel = $safeStatus === 'open' ? 'Ouverte' : 'Fermée';
+@endphp
+
 {{-- ================= HEADER ================= --}}
 <div class="header">
-
-    <div class="company-name">
-        {{ company()?->name ?? 'Entreprise' }}
-    </div>
-
+    <div class="company-name">{{ $companyName }}</div>
     <div class="company-info">
         {{ company()?->address ?? '' }}<br>
         {{ company()?->phone ?? '' }}
-        @if(company()?->phone && company()?->email) |
-        @endif
+        @if(company()?->phone && company()?->email) | @endif
         {{ company()?->email ?? '' }}
     </div>
-
 </div>
 
 <hr>
@@ -129,16 +106,18 @@
 
 <div class="info">
     <p><strong>Caisse :</strong> {{ $cashRegister->name }}</p>
-    <p><strong>Statut :</strong> {{ ucfirst($cashRegister->status) }}</p>
+    {{-- ✅ Statut via whitelist — pas d'injection via ucfirst($cashRegister->status) --}}
+    <p><strong>Statut :</strong> {{ $statusLabel }}</p>
     <p><strong>Date ouverture :</strong>
-        {{ $cashRegister->opened_at?->format('d/m/Y H:i') }}
+        {{ $cashRegister->opened_at?->format('d/m/Y H:i') ?? '-' }}
     </p>
     <p><strong>Date fermeture :</strong>
         {{ $cashRegister->closed_at?->format('d/m/Y H:i') ?? '-' }}
     </p>
 </div>
 
-{{-- ================= TABLE ================= --}}
+
+{{-- ================= TRANSACTIONS ================= --}}
 <table>
     <thead>
         <tr>
@@ -146,81 +125,73 @@
             <th width="12%">Type</th>
             <th width="28%">Description</th>
             <th width="18%">Date</th>
-            <th width="15%" class="right">Montant</th>
+            <th width="27%" class="right">Montant</th>
         </tr>
     </thead>
     <tbody>
 
-        @forelse($transactions as $transaction)
-            <tr>
-                <td>{{ $transaction->reference }}</td>
+    @forelse($transactions as $transaction)
+    <tr>
+        <td>{{ $transaction->reference ?? '-' }}</td>
 
-                <td>
-                    {{ $transaction->type === 'in' ? 'Entrée' : 'Sortie' }}
-                </td>
+        <td>{{ $transaction->type === 'in' ? 'Entrée' : 'Sortie' }}</td>
 
-                <td>{{ $transaction->description ?? '-' }}</td>
+        {{-- ✅ e() sur champs saisis par l'utilisateur --}}
+        <td>{{ e($transaction->description ?? '-') }}</td>
 
-                <td>
-                    {{ $transaction->created_at->format('d/m/Y H:i') }}
-                </td>
+        <td>{{ $transaction->created_at?->format('d/m/Y H:i') ?? '-' }}</td>
 
-                <td class="right">
-                    @if($transaction->type === 'in')
-                        <span class="green">
-                            +{{ number_format($transaction->amount,2) }}
-                        </span>
-                    @else
-                        <span class="red">
-                            -{{ number_format($transaction->amount,2) }}
-                        </span>
-                    @endif
-                    {{ company()?->currency }}
-                </td>
-            </tr>
-        @empty
-            <tr>
-                <td colspan="5" style="text-align:center; padding:15px;">
-                    Aucune transaction enregistrée
-                </td>
-            </tr>
-        @endforelse
+        <td class="right">
+            @if($transaction->type === 'in')
+                <span class="green">+{{ number_format($transaction->amount ?? 0, 2) }}</span>
+            @else
+                <span class="red">-{{ number_format($transaction->amount ?? 0, 2) }}</span>
+            @endif
+            {{ $currency }}
+        </td>
+    </tr>
+    @empty
+    <tr>
+        <td colspan="5" style="text-align:center; padding:15px; color:#9ca3af;">
+            Aucune transaction enregistrée
+        </td>
+    </tr>
+    @endforelse
 
     </tbody>
 </table>
 
-{{-- ================= SUMMARY ================= --}}
+
+{{-- ================= RÉSUMÉ ================= --}}
 <div class="summary">
     <table width="100%">
         <tr>
             <td><strong>Total Entrées :</strong></td>
             <td class="right green">
-                {{ number_format($totalIn,2) }}
-                {{ company()?->currency }}
+                {{ number_format($totalIn, 2) }} {{ $currency }}
             </td>
         </tr>
-
         <tr>
             <td><strong>Total Sorties :</strong></td>
             <td class="right red">
-                {{ number_format($totalOut,2) }}
-                {{ company()?->currency }}
+                {{ number_format($totalOut, 2) }} {{ $currency }}
             </td>
         </tr>
-
         <tr>
             <td class="total-final"><strong>Solde Final :</strong></td>
             <td class="right total-final">
-                {{ number_format($cashRegister->current_balance,2) }}
-                {{ company()?->currency }}
+                {{ number_format($cashRegister->current_balance ?? $cashRegister->closing_balance ?? 0, 2) }}
+                {{ $currency }}
             </td>
         </tr>
     </table>
 </div>
 
+
+{{-- ================= FOOTER ================= --}}
 <div class="footer">
     Rapport généré le {{ now()->format('d/m/Y H:i') }} —
-    {{ config('app.name') }}
+    {{ config('app.vendor.name', config('app.name')) }}
 </div>
 
 </body>

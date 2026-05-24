@@ -19,17 +19,14 @@ class StockMovementController extends Controller
     {
         $query = StockMovement::with('product');
 
-        //  filtre produit
         if ($request->filled('product_id')) {
             $query->where('product_id', $request->product_id);
         }
 
-        //  filtre type
         if ($request->filled('type')) {
             $query->where('type', $request->type);
         }
 
-        //  recherche référence
         if ($request->filled('search')) {
             $query->where('reference', 'like', '%' . $request->search . '%');
         }
@@ -41,9 +38,24 @@ class StockMovementController extends Controller
 
         $products = Product::orderBy('name')->get();
 
+        // ✅ Stats par type pour les cartes KPI
+        $stats = StockMovement::selectRaw('type, count(*) as total')
+            ->groupBy('type')
+            ->pluck('total', 'type')
+            ->toArray();
+
+        // ✅ Pourcentages pour les barres de progression
+        $totalCount = array_sum($stats) ?: 1;
+        $statsPercent = [];
+        foreach ($stats as $type => $count) {
+            $statsPercent[$type] = round(($count / $totalCount) * 100);
+        }
+
         return view('admin.stock_movements.index', compact(
             'movements',
-            'products'
+            'products',
+            'stats',
+            'statsPercent'
         ));
     }
 
@@ -64,18 +76,11 @@ class StockMovementController extends Controller
 
         DB::transaction(function () use ($request) {
 
-            //  lock produit (anti double écriture)
             $product = Product::lockForUpdate()
                 ->findOrFail($request->product_id);
 
             $stockBefore = $product->stock_quantity;
             $quantity    = (float) $request->quantity;
-
-            /*
-            |--------------------------------------------------------------------------
-            | LOGIQUE ERP STOCK
-            |--------------------------------------------------------------------------
-            */
 
             switch ($request->type) {
 
@@ -88,23 +93,19 @@ class StockMovementController extends Controller
                     if ($stockBefore < $quantity) {
                         throw new \Exception('Stock insuffisant.');
                     }
-
                     $stockAfter = $stockBefore - $quantity;
                     break;
 
                 case 'adjustment':
-                    // quantité = nouveau stock réel
                     $stockAfter = $quantity;
                     $quantity   = $stockAfter - $stockBefore;
                     break;
             }
 
-            //  update stock produit
             $product->update([
                 'stock_quantity' => $stockAfter
             ]);
 
-            // enregistrer mouvement
             StockMovement::create([
                 'product_id'   => $product->id,
                 'type'         => $request->type,
@@ -115,6 +116,9 @@ class StockMovementController extends Controller
                 'notes'        => $request->notes,
             ]);
         });
+
+        // Invalider le cache du dashboard (stock faible / rupture)
+        DashboardController::clearCache(auth()->user());
 
         return redirect()
             ->back()
@@ -147,9 +151,9 @@ class StockMovementController extends Controller
     {
         $stockMovement->delete();
 
-        return back()->with(
-            'success',
-            'Mouvement supprimé.'
-        );
+        // Invalider le cache du dashboard
+        DashboardController::clearCache(auth()->user());
+
+        return back()->with('success', 'Mouvement supprimé.');
     }
 }

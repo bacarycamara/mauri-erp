@@ -19,44 +19,41 @@ class CashRegisterController extends Controller
     */
     public function index()
     {
-        $registers = CashRegister::with(['openedBy','closedBy'])
+        $registers = CashRegister::with(['openedBy', 'closedBy'])
             ->latest()
             ->paginate(20);
 
         $current = CashRegister::current();
 
-        return view('admin.cash.index', compact('registers','current'));
+        return view('admin.cash.index', compact('registers', 'current'));
     }
-
-/*
-|--------------------------------------------------------------------------
-| DETAIL CAISSE
-|--------------------------------------------------------------------------
-*/
-public function show(CashRegister $cashRegister)
-{
-    return redirect()->route('admin.cash-transactions.index', [
-        'cash_register_id' => $cashRegister->id
-    ]);
-}
 
     /*
     |--------------------------------------------------------------------------
-    | OUVRIR CAISSE (ERP SAFE)
+    | DETAIL CAISSE
+    |--------------------------------------------------------------------------
+    */
+    public function show(CashRegister $cashRegister)
+    {
+        return redirect()->route('admin.cash-transactions.index', [
+            'cash_register_id' => $cashRegister->id
+        ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | OUVRIR CAISSE
     |--------------------------------------------------------------------------
     */
     public function open(Request $request)
     {
         $request->validate([
-            'name' => 'required|string|max:255',
+            'name'            => 'required|string|max:255',
             'opening_balance' => 'required|numeric|min:0'
         ]);
 
         try {
-
             DB::transaction(function () use ($request) {
-
-                //  empêcher plusieurs caisses ouvertes
                 if (CashRegister::whereNull('closed_at')->exists()) {
                     throw new \Exception('Une caisse est déjà ouverte.');
                 }
@@ -72,85 +69,67 @@ public function show(CashRegister $cashRegister)
             return back()->with('error', $e->getMessage());
         }
 
+        DashboardController::clearCache(auth()->user());
+
         return back()->with('success', 'Caisse ouverte avec succès.');
     }
 
-
     /*
     |--------------------------------------------------------------------------
-    | FERMER CAISSE (RECALCUL ERP RÉEL)
+    | FERMER CAISSE
     |--------------------------------------------------------------------------
     */
-   public function close(CashRegister $cashRegister)
-{
-    //  Vérifier si déjà fermée
-    if (!$cashRegister->isOpen()) {
-        return back()->with('error', 'Cette caisse est déjà fermée.');
+    public function close(CashRegister $cashRegister)
+    {
+        if (!$cashRegister->isOpen()) {
+            return back()->with('error', 'Cette caisse est déjà fermée.');
+        }
+
+        try {
+            DB::transaction(function () use ($cashRegister) {
+
+                $transactions = CashTransaction::where('cash_register_id', $cashRegister->id)
+                    ->lockForUpdate()
+                    ->get();
+
+                $totalIn  = $transactions->where('type', 'in')->sum('amount');
+                $totalOut = $transactions->where('type', 'out')->sum('amount');
+
+                $closingBalance = $cashRegister->opening_balance + $totalIn - $totalOut;
+
+                $cashRegister->update([
+                    'closing_balance' => round($closingBalance, 2),
+                    'closed_at'       => now(),
+                    'closed_by'       => Auth::id(),
+                    'status'          => 'closed',
+                ]);
+            });
+
+        } catch (\Exception $e) {
+            return back()->with('error', $e->getMessage());
+        }
+
+        DashboardController::clearCache(auth()->user());
+
+        return back()->with('success', 'Caisse fermée avec succès.');
     }
-
-    try {
-
-        DB::transaction(function () use ($cashRegister) {
-
-            //  Verrouillage des transactions liées
-            $transactions = CashTransaction::where(
-                    'cash_register_id',
-                    $cashRegister->id
-                )
-                ->lockForUpdate()
-                ->get();
-
-            //  Calcul totaux
-            $totalIn = $transactions
-                ->where('type', 'in')
-                ->sum('amount');
-
-            $totalOut = $transactions
-                ->where('type', 'out')
-                ->sum('amount');
-
-            //  Calcul solde final
-            $closingBalance =
-                $cashRegister->opening_balance
-                + $totalIn
-                - $totalOut;
-
-            //  Mise à jour caisse (CORRECTION ICI)
-            $cashRegister->update([
-                'closing_balance' => round($closingBalance, 2),
-                'closed_at'       => now(),
-                'closed_by'       => Auth::id(),
-                'status'          => 'closed', // IMPORTANT (corrige ton bug)
-            ]);
-        });
-
-    } catch (\Exception $e) {
-        return back()->with('error', $e->getMessage());
-    }
-
-    return back()->with('success', 'Caisse fermée avec succès.');
-}
-
 
     /*
     |--------------------------------------------------------------------------
-    | SUPPRESSION CAISSE (PROTECTION ERP)
+    | SUPPRESSION CAISSE
     |--------------------------------------------------------------------------
     */
     public function destroy(CashRegister $cashRegister)
     {
         if (!$cashRegister->canBeDeleted()) {
-            return back()->with(
-                'error',
-                'Impossible de supprimer : la caisse contient des transactions.'
-            );
+            return back()->with('error', 'Impossible de supprimer : la caisse contient des transactions.');
         }
 
         $cashRegister->delete();
+        DashboardController::clearCache(auth()->user());
 
         return back()->with('success', 'Caisse supprimée avec succès.');
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -159,22 +138,18 @@ public function show(CashRegister $cashRegister)
     */
     public function report(CashRegister $cashRegister)
     {
-        $transactions = CashTransaction::where(
-                'cash_register_id',
-                $cashRegister->id
-            )
+        $transactions = CashTransaction::where('cash_register_id', $cashRegister->id)
             ->latest()
             ->get();
 
-        $totalIn  = $transactions->where('type','in')->sum('amount');
-        $totalOut = $transactions->where('type','out')->sum('amount');
+        $totalIn  = $transactions->where('type', 'in')->sum('amount');
+        $totalOut = $transactions->where('type', 'out')->sum('amount');
 
         $summary = [
             'opening_balance' => $cashRegister->opening_balance,
             'total_in'        => $totalIn,
             'total_out'       => $totalOut,
-            'closing_balance' =>
-                $cashRegister->opening_balance + $totalIn - $totalOut,
+            'closing_balance' => $cashRegister->opening_balance + $totalIn - $totalOut,
             'transactions'    => $transactions->count(),
         ];
 
@@ -182,10 +157,8 @@ public function show(CashRegister $cashRegister)
             'cashRegister',
             'transactions',
             'summary'
-        ))->setPaper('a4','portrait');
+        ))->setPaper('a4', 'portrait');
 
-        return $pdf->download(
-            'rapport-caisse-'.$cashRegister->id.'.pdf'
-        );
+        return $pdf->download('rapport-caisse-' . $cashRegister->id . '.pdf');
     }
 }

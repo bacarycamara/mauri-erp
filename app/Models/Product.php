@@ -91,14 +91,12 @@ class Product extends Model
     public function getFormattedSellingPriceAttribute()
     {
         $currency = company()?->currency ?? '';
-
         return number_format($this->selling_price, 2) . ' ' . $currency;
     }
 
     public function getFormattedPurchasePriceAttribute()
     {
         $currency = company()?->currency ?? '';
-
         return number_format($this->purchase_price, 2) . ' ' . $currency;
     }
 
@@ -131,57 +129,62 @@ class Product extends Model
         parent::boot();
 
         /*
-        |--------------------------------------------------------------------------
-        | SKU AUTO
-        |--------------------------------------------------------------------------
+        |----------------------------------------------------------------------
+        | SKU AUTO — corrigé pour UTF-8 (caractères accentués : é, à, ç…)
+        |----------------------------------------------------------------------
         */
         static::creating(function ($product) {
 
             if (empty($product->sku)) {
 
-                // Préfixe basé sur catégorie
+                // ✅ Préfixe : 3 CARACTÈRES (mb_substr) en majuscules (mb_strtoupper)
                 if ($product->category_id) {
-
-                    $category = Category::select('name')
-                        ->find($product->category_id);
-
-                    $prefix = $category
-                        ? strtoupper(Str::substr($category->name, 0, 3))
+                    $category = Category::select('name')->find($product->category_id);
+                    $prefix   = $category
+                        ? mb_strtoupper(mb_substr($category->name, 0, 3, 'UTF-8'), 'UTF-8')
                         : 'PRO';
-
                 } else {
                     $prefix = 'PRO';
                 }
 
-                // Dernier SKU
-                $lastSku = self::where('sku', 'like', $prefix . '%')
+                // ✅ Longueur du préfixe en caractères (pas en bytes)
+                $prefixLen = mb_strlen($prefix, 'UTF-8');
+
+                // ✅ Inclure les soft-deleted pour éviter les conflits
+                $lastSku = self::withTrashed()
+                    ->where('sku', 'like', $prefix . '%')
                     ->orderByDesc('id')
                     ->value('sku');
 
+                $nextNumber = 1;
                 if ($lastSku) {
-                    $number = (int) substr($lastSku, 3);
-                    $nextNumber = $number + 1;
-                } else {
-                    $nextNumber = 1;
+                    // ✅ mb_substr pour extraire la partie numérique correctement
+                    $numeric    = (int) mb_substr($lastSku, $prefixLen, null, 'UTF-8');
+                    $nextNumber = $numeric + 1;
                 }
 
-                $product->sku = $prefix . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
+                // ✅ Boucle anti-collision : incrémente jusqu'à trouver un SKU libre
+                do {
+                    $sku    = $prefix . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
+                    $exists = self::withTrashed()->where('sku', $sku)->exists();
+                    $nextNumber++;
+                } while ($exists);
+
+                $product->sku = $sku;
             }
         });
 
         /*
-        |--------------------------------------------------------------------------
-        | CALCUL MARGE
-        |--------------------------------------------------------------------------
+        |----------------------------------------------------------------------
+        | CALCUL MARGE AUTOMATIQUE
+        |----------------------------------------------------------------------
         */
         static::saving(function ($product) {
 
             if ($product->purchase_price > 0 && $product->selling_price > 0) {
-
                 $product->profit_margin =
                     (($product->selling_price - $product->purchase_price)
                     / $product->purchase_price) * 100;
-
             } else {
                 $product->profit_margin = 0;
             }

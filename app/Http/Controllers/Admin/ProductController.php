@@ -16,83 +16,37 @@ class ProductController extends Controller
     | INDEX
     |--------------------------------------------------------------------------
     */
- public function index(Request $request)
-{
-    $query = Product::query()
+    public function index(Request $request)
+    {
+        $query = Product::query()
+            ->select([
+                'id', 'name', 'sku', 'selling_price', 'photo',
+                'stock_quantity', 'minimum_stock', 'category_id', 'is_active', 'created_at'
+            ])
+            ->with('category:id,name');
 
-        // charger seulement les colonnes nécessaires
-        ->select([
-            'id',
-            'name',
-            'sku',
-            'selling_price',
-            'stock_quantity',
-            'category_id',
-            'is_active',
-            'created_at'
-        ])
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', $search.'%')
+                  ->orWhere('sku', 'like', $search.'%')
+                  ->orWhere('barcode', 'like', $search.'%');
+            });
+        }
 
-        ->with('category:id,name');
+        if ($request->filled('category')) {
+            $query->where('category_id', $request->category);
+        }
 
-    /*
-    |--------------------------------------------------------------------------
-    | RECHERCHE
-    |--------------------------------------------------------------------------
-    */
+        if ($request->status !== null && $request->status !== '') {
+            $query->where('is_active', $request->status);
+        }
 
-    if ($request->filled('search')) {
+        $products   = $query->orderByDesc('created_at')->paginate(10)->withQueryString();
+        $categories = Category::cached();
 
-        $search = $request->search;
-
-        $query->where(function ($q) use ($search) {
-
-            $q->where('name', 'like', $search.'%')
-              ->orWhere('sku', 'like', $search.'%')
-              ->orWhere('barcode', 'like', $search.'%');
-        });
+        return view('admin.products.index', compact('products', 'categories'));
     }
-
-    /*
-    |--------------------------------------------------------------------------
-    | FILTRE CATEGORIE
-    |--------------------------------------------------------------------------
-    */
-
-    if ($request->filled('category')) {
-        $query->where('category_id', $request->category);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | FILTRE STATUT
-    |--------------------------------------------------------------------------
-    */
-
-    if ($request->status !== null && $request->status !== '') {
-        $query->where('is_active', $request->status);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | PAGINATION
-    |--------------------------------------------------------------------------
-    */
-
-    $products = $query
-        ->orderByDesc('created_at')
-        ->paginate(10)
-        ->withQueryString();
-
-    /*
-    |--------------------------------------------------------------------------
-    | CATEGORIES (CACHE)
-    |--------------------------------------------------------------------------
-    */
-
-    $categories = Category::cached();
-
-    return view('admin.products.index', compact('products','categories'));
-}
 
     /*
     |--------------------------------------------------------------------------
@@ -101,9 +55,7 @@ class ProductController extends Controller
     */
     public function create()
     {
-        //  cache catégories
         $categories = Category::cached();
-
         return view('admin.products.create', compact('categories'));
     }
 
@@ -114,27 +66,40 @@ class ProductController extends Controller
     */
     public function store(Request $request)
     {
-        $validated = $request->validate([
+        $request->validate([
             'name'           => 'required|string|max:255',
             'selling_price'  => 'required|numeric|min:0',
             'purchase_price' => 'nullable|numeric|min:0',
+            'vat_rate'       => 'nullable|numeric|min:0',
+            'profit_margin'  => 'nullable|numeric',
             'category_id'    => 'nullable|exists:categories,id',
+            'type'           => 'nullable|in:physical,service',
+            'unit'           => 'nullable|string|max:50',
+            'description'    => 'nullable|string',
+            'stock_quantity' => 'nullable|numeric|min:0',
+            'minimum_stock'  => 'nullable|numeric|min:0',
+            'is_active'      => 'nullable|boolean',
             'photo'          => 'nullable|image|max:2048',
         ]);
 
-        $data = $request->except('sku'); // SKU généré automatiquement par le modèle
+        $data = $request->except(['sku', '_token', '_method']);
 
-        // Upload image
+        // ✅ Forcer 0 si purchase_price est vide
+        $data['purchase_price'] = $data['purchase_price'] ?? 0;
+
+        $data['is_active'] = $request->boolean('is_active');
+
         if ($request->hasFile('photo')) {
-            $data['photo'] = $request->file('photo')
-                ->store('products', 'public');
+            $data['photo'] = $request->file('photo')->store('products', 'public');
+        } else {
+            unset($data['photo']);
         }
 
         Product::create($data);
 
         return redirect()
             ->route('admin.products.index')
-            ->with('success', 'Produit créé avec succès.');
+            ->with('success', '✅ Produit créé avec succès.');
     }
 
     /*
@@ -144,45 +109,54 @@ class ProductController extends Controller
     */
     public function edit(Product $product)
     {
-        //  cache catégories
         $categories = Category::cached();
-
         return view('admin.products.edit', compact('product', 'categories'));
     }
 
     /*
     |--------------------------------------------------------------------------
-    | UPDATE
+    | UPDATE ✅ CORRIGÉ
     |--------------------------------------------------------------------------
     */
     public function update(Request $request, Product $product)
     {
-        $validated = $request->validate([
+        $request->validate([
             'name'           => 'required|string|max:255',
             'selling_price'  => 'required|numeric|min:0',
             'purchase_price' => 'nullable|numeric|min:0',
+            'vat_rate'       => 'nullable|numeric|min:0',
+            'profit_margin'  => 'nullable|numeric',
             'category_id'    => 'nullable|exists:categories,id',
+            'type'           => 'nullable|in:physical,service',
+            'unit'           => 'nullable|string|max:50',
+            'description'    => 'nullable|string',
+            'stock_quantity' => 'nullable|numeric|min:0',
+            'minimum_stock'  => 'nullable|numeric|min:0',
+            'is_active'      => 'nullable|boolean',
             'photo'          => 'nullable|image|max:2048',
         ]);
 
-        $data = $request->except('sku');
+        $data = $request->except(['sku', '_token', '_method']);
 
-        // Upload nouvelle image
+        // ✅ FIX : Forcer 0 si purchase_price est null ou vide
+        $data['purchase_price'] = $data['purchase_price'] ?? 0;
+
+        $data['is_active'] = $request->boolean('is_active');
+
         if ($request->hasFile('photo')) {
-
             if ($product->photo && Storage::disk('public')->exists($product->photo)) {
                 Storage::disk('public')->delete($product->photo);
             }
-
-            $data['photo'] = $request->file('photo')
-                ->store('products', 'public');
+            $data['photo'] = $request->file('photo')->store('products', 'public');
+        } else {
+            unset($data['photo']);
         }
 
         $product->update($data);
 
         return redirect()
             ->route('admin.products.index')
-            ->with('success', 'Produit mis à jour.');
+            ->with('success', '✅ Produit mis à jour avec succès.');
     }
 
     /*
@@ -202,4 +176,14 @@ class ProductController extends Controller
             ->route('admin.products.index')
             ->with('success', 'Produit supprimé.');
     }
+
+    /*
+|--------------------------------------------------------------------------
+| SHOW
+|--------------------------------------------------------------------------
+*/
+public function show(Product $product)
+{
+    return view('admin.products.show', compact('product'));
+}
 }

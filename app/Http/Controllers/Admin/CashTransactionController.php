@@ -13,76 +13,62 @@ class CashTransactionController extends Controller
 {
     /*
     |--------------------------------------------------------------------------
-    | LISTE GLOBAL + PAR CAISSE (UNIFIÉ)
+    | INDEX — LISTE GLOBAL + PAR CAISSE
     |--------------------------------------------------------------------------
     */
- public function index(Request $request)
-{
-    /*
-    |--------------------------------------------------------------------------
-    | RECUPERATION CAISSE (OPTIONNELLE)
-    |--------------------------------------------------------------------------
-    */
-    $cashRegister = null;
+    public function index(Request $request)
+    {
+        $cashRegister = null;
 
-    if ($request->filled('cash_register_id')) {
-        $cashRegister = CashRegister::find($request->cash_register_id);
+        if ($request->filled('cash_register_id')) {
+            $cashRegister = CashRegister::find($request->cash_register_id);
+        }
+
+        $baseQuery = CashTransaction::with('cashRegister');
+
+        if ($cashRegister) {
+            $baseQuery->where('cash_register_id', $cashRegister->id);
+        }
+
+        if ($request->filled('search')) {
+            $baseQuery->where(function ($q) use ($request) {
+                $q->where('reference', 'like', '%' . $request->search . '%')
+                  ->orWhere('description', 'like', '%' . $request->search . '%');
+            });
+        }
+
+        if ($request->filled('date_from')) {
+            $baseQuery->whereDate('created_at', '>=', $request->date_from);
+        }
+
+        if ($request->filled('date_to')) {
+            $baseQuery->whereDate('created_at', '<=', $request->date_to);
+        }
+
+        if ($request->filled('type')) {
+            $baseQuery->where('type', $request->type);
+        }
+
+        $transactions = (clone $baseQuery)->latest()->paginate(20)->withQueryString();
+
+        // ✅ Totaux globaux calculés en DB
+        $totalIn  = (clone $baseQuery)->where('type', 'in')->sum('amount');
+        $totalOut = (clone $baseQuery)->where('type', 'out')->sum('amount');
+
+        return view('admin.cash.transactions.index', compact(
+            'cashRegister',
+            'transactions',
+            'totalIn',
+            'totalOut'
+        ));
     }
-
-    $baseQuery = CashTransaction::with('cashRegister');
-
-    if ($cashRegister) {
-        $baseQuery->where('cash_register_id', $cashRegister->id);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | FILTRES
-    |--------------------------------------------------------------------------
-    */
-    if ($request->filled('search')) {
-        $baseQuery->where(function ($q) use ($request) {
-            $q->where('reference', 'like', '%' . $request->search . '%')
-              ->orWhere('description', 'like', '%' . $request->search . '%');
-        });
-    }
-
-    if ($request->filled('date_from')) {
-        $baseQuery->whereDate('created_at', '>=', $request->date_from);
-    }
-
-    if ($request->filled('date_to')) {
-        $baseQuery->whereDate('created_at', '<=', $request->date_to);
-    }
-
-    if ($request->filled('type')) {
-        $baseQuery->where('type', $request->type);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | DATA
-    |--------------------------------------------------------------------------
-    */
-    $transactions = (clone $baseQuery)
-        ->latest()
-        ->paginate(20)
-        ->withQueryString();
-
-    $totalIn  = (clone $baseQuery)->where('type','in')->sum('amount');
-    $totalOut = (clone $baseQuery)->where('type','out')->sum('amount');
-
-    return view('admin.cash.transactions.index', compact(
-        'cashRegister',
-        'transactions',
-        'totalIn',
-        'totalOut'
-    ));
-}
 
     /*
     |--------------------------------------------------------------------------
-    | STORE (AVEC MISE À JOUR CAISSE)
+    | STORE
+    | ✅ CORRIGÉ : suppression de la double mise à jour caisse.
+    |    Le hook created() de CashTransaction gère automatiquement
+    |    l'incrémentation de total_in / total_out.
     |--------------------------------------------------------------------------
     */
     public function store(Request $request)
@@ -91,45 +77,17 @@ class CashTransactionController extends Controller
             'cash_register_id' => 'required|exists:cash_registers,id',
             'type'             => 'required|in:in,out',
             'amount'           => 'required|numeric|min:0.01',
-            'description'      => 'nullable|string|max:255'
+            'description'      => 'nullable|string|max:500',
         ]);
 
         try {
-
-            DB::transaction(function () use ($request) {
-
-                $cashRegister = CashRegister::lockForUpdate()
-                    ->findOrFail($request->cash_register_id);
-
-                if (!$cashRegister->isOpen()) {
-                    throw new \Exception('La caisse est fermée.');
-                }
-
-                if (
-                    $request->type === 'out' &&
-                    $cashRegister->current_balance < $request->amount
-                ) {
-                    throw new \Exception('Solde insuffisant.');
-                }
-
-                $transaction = CashTransaction::create([
-                    'cash_register_id' => $cashRegister->id,
-                    'type'             => $request->type,
-                    'amount'           => $request->amount,
-                    'description'      => $request->description,
-                    'source'           => 'manual'
-                ]);
-
-                // Mise à jour des totaux caisse
-                if ($request->type === 'in') {
-                    $cashRegister->total_in += $request->amount;
-                } else {
-                    $cashRegister->total_out += $request->amount;
-                }
-
-                $cashRegister->save();
-            });
-
+            CashTransaction::create([
+                'cash_register_id' => $request->cash_register_id,
+                'type'             => $request->type,
+                'amount'           => $request->amount,
+                'description'      => $request->description,
+                'source'           => 'manual',
+            ]);
         } catch (\Exception $e) {
             return back()->with('error', $e->getMessage());
         }
@@ -137,10 +95,12 @@ class CashTransactionController extends Controller
         return back()->with('success', 'Transaction enregistrée avec succès.');
     }
 
-
     /*
     |--------------------------------------------------------------------------
-    | DELETE (RECALCUL CAISSE)
+    | DESTROY
+    | ✅ CORRIGÉ : suppression de la double mise à jour caisse.
+    |    Le hook deleted() de CashTransaction gère automatiquement
+    |    le décrément de total_in / total_out.
     |--------------------------------------------------------------------------
     */
     public function destroy(CashTransaction $cashTransaction)
@@ -148,24 +108,17 @@ class CashTransactionController extends Controller
         $cashRegister = $cashTransaction->cashRegister;
 
         if (!$cashRegister || !$cashRegister->isOpen()) {
-            return back()->with('error','Impossible de supprimer, caisse fermée.');
+            return back()->with('error', 'Impossible de supprimer : caisse fermée.');
         }
 
-        DB::transaction(function () use ($cashTransaction, $cashRegister) {
-
-            if ($cashTransaction->type === 'in') {
-                $cashRegister->total_in -= $cashTransaction->amount;
-            } else {
-                $cashRegister->total_out -= $cashTransaction->amount;
-            }
-
-            $cashRegister->save();
+        try {
             $cashTransaction->delete();
-        });
+        } catch (\Exception $e) {
+            return back()->with('error', $e->getMessage());
+        }
 
         return back()->with('success', 'Transaction supprimée.');
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -178,19 +131,18 @@ class CashTransactionController extends Controller
             ->latest()
             ->get();
 
-        $totalIn  = $transactions->where('type','in')->sum('amount');
-        $totalOut = $transactions->where('type','out')->sum('amount');
+        $totalIn  = $transactions->where('type', 'in')->sum('amount');
+        $totalOut = $transactions->where('type', 'out')->sum('amount');
 
         $pdf = Pdf::loadView('admin.cash.transactions.pdf', compact(
             'cashRegister',
             'transactions',
             'totalIn',
             'totalOut'
-        ))->setPaper('a4','portrait');
+        ))->setPaper('a4', 'portrait');
 
-        return $pdf->download('rapport-caisse-'.$cashRegister->id.'.pdf');
+        return $pdf->download('rapport-caisse-' . $cashRegister->id . '.pdf');
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -203,8 +155,8 @@ class CashTransactionController extends Controller
             ->latest()
             ->get();
 
-        $totalIn  = $transactions->where('type','in')->sum('amount');
-        $totalOut = $transactions->where('type','out')->sum('amount');
+        $totalIn  = $transactions->where('type', 'in')->sum('amount');
+        $totalOut = $transactions->where('type', 'out')->sum('amount');
 
         return view('admin.cash.transactions.print', compact(
             'cashRegister',

@@ -1,5 +1,7 @@
 <x-app-layout>
 
+@can('view cash_registers')
+
 <div class="max-w-7xl mx-auto space-y-10"
      x-data="cashShow()"
      x-init="init()"
@@ -12,11 +14,9 @@
             <x-heroicon-o-banknotes class="w-8 h-8 text-indigo-600"/>
             <div>
                 <h1 class="text-3xl font-bold text-gray-900">
-                    {{ $cashRegister->name }}
+                    {{ e($cashRegister->name) }}
                 </h1>
-                <p class="text-sm text-gray-500">
-                    Détail complet de la caisse
-                </p>
+                <p class="text-sm text-gray-500">Détail complet de la caisse</p>
             </div>
         </div>
 
@@ -28,17 +28,23 @@
                 Retour
             </a>
 
-            <a href="{{ route('admin.cash-registers.transactions.index',$cashRegister) }}"
+            @can('view cash_transactions')
+            <a href="{{ route('admin.cash-transactions.index', ['cash_register_id' => $cashRegister->id]) }}"
                class="flex items-center gap-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-xl hover:bg-indigo-200 transition">
                 <x-heroicon-o-arrows-right-left class="w-4 h-4"/>
                 Transactions
             </a>
+            @endcan
 
-            <a href="{{ route('admin.cash-registers.pdf',$cashRegister) }}"
+            @can('print cash_registers')
+            <a href="{{ route('admin.cash-registers.pdf', $cashRegister) }}"
+               target="_blank"
+               rel="noopener noreferrer"
                class="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition">
                 <x-heroicon-o-document-text class="w-4 h-4"/>
                 Rapport PDF
             </a>
+            @endcan
 
         </div>
 
@@ -56,6 +62,11 @@
 
 
     {{-- ================= SUMMARY CARDS ================= --}}
+    @php
+        $currency       = company()?->currency ?? '';
+        $currentBalance = $cashRegister->current_balance ?? $cashRegister->closing_balance ?? 0;
+    @endphp
+
     <div class="grid md:grid-cols-4 gap-6">
 
         <div class="bg-white p-6 rounded-2xl shadow hover:shadow-xl transition">
@@ -64,8 +75,8 @@
                 <x-heroicon-o-currency-dollar class="w-5 h-5 text-gray-400"/>
             </div>
             <p class="text-xl font-bold mt-2">
-                {{ number_format($cashRegister->opening_balance,2) }}
-                {{ company()?->currency }}
+                {{ number_format($cashRegister->opening_balance ?? 0, 2) }}
+                {{ $currency }}
             </p>
         </div>
 
@@ -102,7 +113,7 @@
     </div>
 
 
-    {{-- ================= TIMELINE PREMIUM ================= --}}
+    {{-- ================= TIMELINE TRANSACTIONS ================= --}}
     <div class="bg-white rounded-2xl shadow overflow-hidden">
 
         <div class="px-6 py-5 border-b flex justify-between items-center">
@@ -110,7 +121,6 @@
                 <x-heroicon-o-clock class="w-5 h-5"/>
                 Historique des Transactions
             </h2>
-
             <span class="text-sm text-gray-500">
                 {{ $cashRegister->transactions->count() }} mouvement(s)
             </span>
@@ -120,77 +130,65 @@
 
             @forelse($cashRegister->transactions->sortByDesc('created_at') as $transaction)
 
-                <div class="flex items-start gap-5 group">
+            <div class="flex items-start gap-5 group">
 
-                    {{-- ICON --}}
-                    <div class="w-12 h-12 flex items-center justify-center rounded-full
-                        {{ $transaction->isIncoming()
-                            ? 'bg-green-100 text-green-600'
-                            : 'bg-red-100 text-red-600' }}
-                        shadow-sm">
+                {{-- ICÔNE DIRECTION --}}
+                <div class="w-12 h-12 flex-shrink-0 flex items-center justify-center rounded-full shadow-sm
+                    {{ $transaction->type === 'in'
+                        ? 'bg-green-100 text-green-600'
+                        : 'bg-red-100 text-red-600' }}">
+                    @if($transaction->type === 'in')
+                        <x-heroicon-o-arrow-down class="w-6 h-6"/>
+                    @else
+                        <x-heroicon-o-arrow-up class="w-6 h-6"/>
+                    @endif
+                </div>
 
-                        @if($transaction->isIncoming())
-                            <x-heroicon-o-arrow-down class="w-6 h-6"/>
-                        @else
-                            <x-heroicon-o-arrow-up class="w-6 h-6"/>
-                        @endif
+                {{-- CONTENU --}}
+                <div class="flex-1 bg-gray-50 p-5 rounded-2xl group-hover:shadow-lg transition duration-200">
 
-                    </div>
-
-                    {{-- CONTENT --}}
-                    <div class="flex-1 bg-gray-50 p-5 rounded-2xl
-                                group-hover:shadow-lg transition duration-200">
-
-                        <div class="flex justify-between items-center">
-
-                            <div>
-                                <p class="font-semibold text-gray-800">
-                                    {{ $transaction->source_label }}
-                                </p>
-
-                                <p class="text-xs text-gray-500">
-                                    {{ $transaction->created_at->format('d/m/Y H:i') }}
-                                </p>
-                            </div>
-
-                            <p class="text-lg font-bold
-                                {{ $transaction->isIncoming()
-                                    ? 'text-green-600'
-                                    : 'text-red-600' }}">
-
-                                {{ $transaction->isIncoming() ? '+' : '-' }}
-                                {{ number_format($transaction->amount,2) }}
-                                {{ company()?->currency }}
-
+                    <div class="flex justify-between items-start gap-4">
+                        <div>
+                            <p class="font-semibold text-gray-800">
+                                {{-- ✅ e() sur source_label au cas où il contient du HTML --}}
+                                {{ e($transaction->source_label ?? '-') }}
                             </p>
-
+                            <p class="text-xs text-gray-500">
+                                {{ $transaction->created_at?->format('d/m/Y H:i') }}
+                            </p>
                         </div>
 
-                        @if($transaction->description)
-                            <p class="text-sm text-gray-600 mt-3 flex items-center gap-2">
-                                <x-heroicon-o-chat-bubble-left-ellipsis class="w-4 h-4 text-gray-400"/>
-                                {{ $transaction->description }}
-                            </p>
-                        @endif
-
-                        @if($transaction->reference)
-                            <p class="text-xs text-gray-400 mt-1 flex items-center gap-1">
-                                <x-heroicon-o-hashtag class="w-3 h-3"/>
-                                Réf : {{ $transaction->reference }}
-                            </p>
-                        @endif
-
+                        <p class="text-lg font-bold flex-shrink-0
+                            {{ $transaction->type === 'in' ? 'text-green-600' : 'text-red-600' }}">
+                            {{ $transaction->type === 'in' ? '+' : '-' }}
+                            {{ number_format($transaction->amount ?? 0, 2) }}
+                            {{ $currency }}
+                        </p>
                     </div>
 
+                    @if($transaction->description)
+                    <p class="text-sm text-gray-600 mt-3 flex items-center gap-2">
+                        <x-heroicon-o-chat-bubble-left-ellipsis class="w-4 h-4 text-gray-400 flex-shrink-0"/>
+                        {{ e($transaction->description) }}
+                    </p>
+                    @endif
+
+                    @if($transaction->reference)
+                    <p class="text-xs text-gray-400 mt-1 flex items-center gap-1">
+                        <x-heroicon-o-hashtag class="w-3 h-3 flex-shrink-0"/>
+                        Réf : {{ e($transaction->reference) }}
+                    </p>
+                    @endif
+
                 </div>
+
+            </div>
 
             @empty
-
-                <div class="text-center py-16 text-gray-500">
-                    <x-heroicon-o-inbox class="w-10 h-10 mx-auto mb-3 text-gray-300"/>
-                    Aucune transaction enregistrée
-                </div>
-
+            <div class="text-center py-16 text-gray-500">
+                <x-heroicon-o-inbox class="w-10 h-10 mx-auto mb-3 text-gray-300"/>
+                Aucune transaction enregistrée
+            </div>
             @endforelse
 
         </div>
@@ -199,37 +197,43 @@
 
 </div>
 
+@else
+<div class="flex flex-col items-center justify-center py-24 text-gray-400">
+    <x-heroicon-o-lock-closed class="w-12 h-12 mb-4 text-gray-300"/>
+    <p class="text-lg font-medium">Accès non autorisé</p>
+</div>
+@endcan
 
-{{-- ================= SCRIPT ANIMATION ================= --}}
+
 @push('scripts')
 <script>
 function cashShow() {
     return {
+        // ✅ cast float explicite — sécurité JS
+        totalIn:  {{ (float) ($cashRegister->total_in  ?? 0) }},
+        totalOut: {{ (float) ($cashRegister->total_out ?? 0) }},
+        balance:  {{ (float) $currentBalance }},
 
-        totalIn: {{ $cashRegister->total_in }},
-        totalOut: {{ $cashRegister->total_out }},
-        balance: {{ $cashRegister->current_balance ?? $cashRegister->closing_balance }},
-
-        animatedIn: 0,
-        animatedOut: 0,
+        animatedIn:      0,
+        animatedOut:     0,
         animatedBalance: 0,
 
-        statusLabel: "{{ $cashRegister->status === 'open' ? 'Caisse Ouverte' : 'Caisse Fermée' }}",
-        statusClass: "{{ $cashRegister->status === 'open'
-            ? 'bg-green-100 text-green-700'
-            : 'bg-gray-200 text-gray-700' }}",
+        statusLabel: '{{ $cashRegister->status === "open" ? "Caisse Ouverte" : "Caisse Fermée" }}',
+        statusClass:  '{{ $cashRegister->status === "open"
+            ? "bg-green-100 text-green-700"
+            : "bg-gray-200 text-gray-700" }}',
 
         init() {
-            this.animate('animatedIn', this.totalIn);
-            this.animate('animatedOut', this.totalOut);
+            this.animate('animatedIn',      this.totalIn);
+            this.animate('animatedOut',     this.totalOut);
             this.animate('animatedBalance', this.balance);
         },
 
         animate(property, target) {
-            let start = 0;
-            let duration = 800;
-            let stepTime = 15;
-            let steps = duration / stepTime;
+            if (!target || target <= 0) { this[property] = 0; return; }
+            let start     = 0;
+            let stepTime  = 15;
+            let steps     = Math.ceil(800 / stepTime);
             let increment = target / steps;
 
             let counter = setInterval(() => {
@@ -243,7 +247,10 @@ function cashShow() {
         },
 
         formatCurrency(value) {
-            return new Intl.NumberFormat().format(value.toFixed(2)) + ' {{ company()?->currency }}';
+            return new Intl.NumberFormat('fr-FR', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            }).format(value || 0) + ' {{ $currency }}';
         }
     }
 }

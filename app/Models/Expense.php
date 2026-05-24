@@ -47,9 +47,15 @@ class Expense extends Model
         return $this->belongsTo(User::class, 'approved_by');
     }
 
+    /**
+     * ✅ CORRIGÉ : CashTransaction n'a pas de colonne expense_id.
+     * On retrouve la transaction liée via la description (ex: "Dépense EXP-000004")
+     * et la source 'expense'.
+     */
     public function transaction()
     {
-        return $this->hasOne(CashTransaction::class);
+        return $this->hasOne(CashTransaction::class, 'description', 'reference')
+                    ->where('source', 'expense');
     }
 
     /*
@@ -60,9 +66,7 @@ class Expense extends Model
 
     public function scopeSearch(Builder $query, $search)
     {
-        if (!$search) {
-            return $query;
-        }
+        if (!$search) return $query;
 
         return $query->where(function ($q) use ($search) {
             $q->where('reference', 'like', "%{$search}%")
@@ -73,10 +77,7 @@ class Expense extends Model
 
     public function scopeStatus(Builder $query, $status)
     {
-        if (!$status) {
-            return $query;
-        }
-
+        if (!$status) return $query;
         return $query->where('status', $status);
     }
 
@@ -85,7 +86,6 @@ class Expense extends Model
         if ($from && $to) {
             $query->whereBetween('expense_date', [$from, $to]);
         }
-
         return $query;
     }
 
@@ -125,23 +125,13 @@ class Expense extends Model
     {
         parent::boot();
 
-        /*
-        |--------------------------------------------------------------------------
-        | CREATING
-        |--------------------------------------------------------------------------
-        */
-
         static::creating(function ($expense) {
 
             DB::transaction(function () use ($expense) {
 
                 if (empty($expense->reference)) {
-
                     $lastId = static::withTrashed()->max('id') ?? 0;
-                    $next   = $lastId + 1;
-
-                    $expense->reference =
-                        'EXP-' . str_pad($next, 6, '0', STR_PAD_LEFT);
+                    $expense->reference = 'EXP-' . str_pad($lastId + 1, 6, '0', STR_PAD_LEFT);
                 }
 
                 $expense->status ??= 'pending';
@@ -157,31 +147,36 @@ class Expense extends Model
         });
 
         /*
-        |--------------------------------------------------------------------------
-        | UPDATED
-        |--------------------------------------------------------------------------
-        */
-
-        static::updated(function ($expense) {
+         * ✅ 'updating' (AVANT save) — les vérifications caisse sont faites
+         * AVANT que le statut soit persisté en base.
+         */
+        static::updating(function ($expense) {
 
             if ($expense->isDirty('status')) {
 
-                DB::transaction(function () use ($expense) {
+                $newStatus = $expense->status;
+                $oldStatus = $expense->getOriginal('status');
 
-                    if ($expense->status === 'approved') {
+                DB::transaction(function () use ($expense, $newStatus, $oldStatus) {
+
+                    if ($newStatus === 'approved' && $oldStatus !== 'approved') {
                         self::processApproval($expense);
                     }
 
-                    if ($expense->status === 'cancelled') {
+                    if ($newStatus === 'cancelled' && $oldStatus !== 'cancelled') {
 
-                        if ($expense->transaction) {
-                            $expense->transaction->delete();
+                        // ✅ CORRIGÉ : charger la transaction fraîchement depuis la DB
+                        // au lieu de $expense->transaction (qui causait l'erreur SQL)
+                        $transaction = CashTransaction::where('source', 'expense')
+                            ->where('description', 'Dépense ' . $expense->reference)
+                            ->first();
+
+                        if ($transaction) {
+                            $transaction->delete();
                         }
 
                         $expense->approved_by = null;
                         $expense->approved_at = null;
-
-                        $expense->saveQuietly();
                     }
                 });
             }
@@ -193,8 +188,7 @@ class Expense extends Model
     | APPROVAL PROCESS
     |--------------------------------------------------------------------------
     */
-
-    protected static function processApproval($expense)
+    protected static function processApproval(Expense $expense): void
     {
         $cash = CashRegister::lockForUpdate()
             ->findOrFail($expense->cash_register_id);
@@ -203,19 +197,21 @@ class Expense extends Model
             throw new \Exception("La caisse est fermée.");
         }
 
-        if ($expense->amount > $cash->current_balance) {
-            throw new \Exception("Solde insuffisant dans la caisse.");
+        if ((float) $expense->amount > (float) $cash->current_balance) {
+            throw new \Exception(
+                "Solde insuffisant dans la caisse. " .
+                "Solde disponible : " . number_format($cash->current_balance, 2) . " " .
+                (company()?->currency ?? '')
+            );
         }
 
         $expense->approved_by = Auth::id();
         $expense->approved_at = now();
 
-        $expense->saveQuietly();
-
         CashTransaction::create([
             'cash_register_id' => $expense->cash_register_id,
             'type'             => 'out',
-            'amount'           => round($expense->amount,2),
+            'amount'           => round((float) $expense->amount, 2),
             'description'      => 'Dépense ' . $expense->reference,
             'source'           => 'expense',
         ]);

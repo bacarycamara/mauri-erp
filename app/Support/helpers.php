@@ -3,25 +3,22 @@
 use Illuminate\Support\Facades\Cache;
 use App\Models\Company;
 
-if (!function_exists('company')) {
-
+if (! function_exists('company')) {
     /**
-     * Retourne l'entreprise active (ERP)
-     * Cache intelligent pour améliorer les performances.
+     * Retourne l'entreprise active (ERP mono-instance).
+     * On cache uniquement l'ID (scalaire) — jamais l'objet Eloquent —
+     * pour que chaque requête reçoive toujours les données fraîches (logo inclus).
      */
     function company(): ?Company
     {
-        // Ne rien charger si l'utilisateur n'est pas connecté
-        if (!auth()->check()) {
+        if (! auth()->check()) {
             return null;
         }
 
-        return Cache::remember(
-            'company',
-            now()->addHours(6), // cache 6 heures
-            function () {
-                return Company::query()->first();
-            }
-        );
+        $id = Cache::rememberForever('company_id', function () {
+            return Company::first()?->id;
+        });
+
+        return $id ? Company::find($id) : null;
     }
 }

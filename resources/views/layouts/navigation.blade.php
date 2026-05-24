@@ -21,6 +21,7 @@
     $currentRoute = request()->route()?->getName() ?? '';
     $isActive     = fn ($pattern) => str_starts_with($currentRoute, $pattern);
 
+    // ✅ Charger les permissions une seule fois — évite N+1 si appelé plusieurs fois
     $permissions = auth()->check()
         ? auth()->user()->getAllPermissions()->pluck('name')->toArray()
         : [];
@@ -32,33 +33,47 @@
 {{-- ── HEADER ── --}}
 <div class="px-5 py-5 border-b border-indigo-700/40 flex items-center justify-between flex-shrink-0">
     <div class="flex items-center gap-3 overflow-hidden">
-        <div class="h-11 w-11 rounded-2xl bg-white/10 backdrop-blur flex items-center justify-center shadow-lg overflow-hidden flex-shrink-0">
+        <div class="h-11 w-11 rounded-2xl bg-white/10 backdrop-blur flex items-center
+                    justify-center shadow-lg overflow-hidden flex-shrink-0">
             @if($company?->logo)
-                <img src="{{ $company->logo_url }}" class="h-full w-full object-cover">
+            <img src="{{ $company->logo_url }}"
+                 alt="{{ e($company->name ?? 'Logo') }}"
+                 class="h-full w-full object-cover">
             @else
-                <span class="font-bold text-lg">{{ strtoupper(substr($company->name ?? 'M', 0, 1)) }}</span>
+            {{-- ✅ e() sur le nom de la société --}}
+            <span class="font-bold text-lg">
+                {{ strtoupper(substr(e($company->name ?? 'M'), 0, 1)) }}
+            </span>
             @endif
         </div>
 
         <div x-show="open || isMobile" x-transition.opacity class="overflow-hidden">
-            <div class="font-semibold text-sm truncate">{{ $company->name ?? 'MauriERP' }}</div>
-            <div class="text-xs text-indigo-300">{{ $company->currency ?? 'MRU' }}</div>
+            {{-- ✅ e() sur le nom et la devise --}}
+            <div class="font-semibold text-sm truncate">
+                {{ e($company->name ?? 'MauriERP') }}
+            </div>
+            <div class="text-xs text-indigo-300">
+                {{ e($company->currency ?? 'MRU') }}
+            </div>
         </div>
     </div>
 
     <div class="flex items-center gap-2">
         {{-- Bouton collapse desktop --}}
-        <button @click="open=!open"
-            class="hidden lg:flex text-indigo-300 hover:text-white transition"
-            :class="open ? 'hover:rotate-180' : ''">
+        <button @click="open = !open"
+                class="hidden lg:flex text-indigo-300 hover:text-white transition"
+                :class="open ? 'hover:rotate-180' : ''"
+                aria-label="Toggle sidebar">
             <x-heroicon-o-bars-3 class="h-6 w-6"/>
         </button>
 
         {{-- Bouton fermer mobile --}}
         <button onclick="closeSidebar()"
-            class="lg:hidden text-indigo-300 hover:text-white transition p-1">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                class="lg:hidden text-indigo-300 hover:text-white transition p-1"
+                aria-label="Fermer le menu">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke-width="2" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
             </svg>
         </button>
     </div>
@@ -66,7 +81,8 @@
 
 
 {{-- ── NAVIGATION ── --}}
-<nav class="flex-1 px-3 py-5 space-y-1 overflow-y-auto text-sm scrollbar-thin">
+<nav class="flex-1 px-3 py-5 space-y-1 overflow-y-auto text-sm scrollbar-thin"
+     aria-label="Navigation principale">
 
     {{-- DASHBOARD --}}
     @if($can('view dashboard'))
@@ -121,9 +137,9 @@
         'icon'   => 'receipt-percent',
         'routes' => ['admin.customers.*', 'admin.sales.*', 'admin.payments.*'],
         'links'  => [
-            ['route' => 'admin.customers.index', 'label' => 'Clients',    'permission' => 'view customers'],
-            ['route' => 'admin.sales.index',     'label' => 'Ventes',     'permission' => 'view sales'],
-            ['route' => 'admin.payments.index',  'label' => 'Paiements',  'permission' => 'view payments'],
+            ['route' => 'admin.customers.index', 'label' => 'Clients',   'permission' => 'view customers'],
+            ['route' => 'admin.sales.index',     'label' => 'Ventes',    'permission' => 'view sales'],
+            ['route' => 'admin.payments.index',  'label' => 'Paiements', 'permission' => 'view payments'],
         ]
     ])
     @endif
@@ -152,7 +168,7 @@
     </a>
     @endif
 
-    <div class="border-t border-indigo-700/40 my-3"></div>
+    <div class="border-t border-indigo-700/40 my-3" role="separator"></div>
 
     {{-- UTILISATEURS --}}
     @if($can('view users'))
@@ -209,15 +225,17 @@
 
 {{-- ── FOOTER ── --}}
 <div class="border-t border-indigo-700/40 p-4 text-xs text-indigo-300 text-center flex-shrink-0">
+
     <div x-show="open || isMobile" x-transition.opacity>
         <div class="font-semibold text-white">MauriERP</div>
         <div>Powered by Bacary Camara</div>
         <div class="text-[10px] opacity-70">© {{ date('Y') }}</div>
     </div>
 
-    <div x-show="!open && !isMobile" class="flex justify-center">
+    <div x-show="!open && !isMobile" x-cloak class="flex justify-center">
         <span class="text-[10px] font-bold">ME</span>
     </div>
+
 </div>
 
 </aside>

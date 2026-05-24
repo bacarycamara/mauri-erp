@@ -52,12 +52,13 @@ class CompanyController extends Controller
         ]);
 
         /*
-        |--------------------------------------------------------------------------
-        | LOGO UPLOAD (SAFE ERP)
-        |--------------------------------------------------------------------------
+        |----------------------------------------------------------------------
+        | LOGO UPLOAD
+        |----------------------------------------------------------------------
         */
         if ($request->hasFile('logo')) {
 
+            // Supprimer l'ancien logo s'il existe
             if ($company->logo && Storage::disk('public')->exists($company->logo)) {
                 Storage::disk('public')->delete($company->logo);
             }
@@ -69,25 +70,28 @@ class CompanyController extends Controller
                 ->storeAs('companies', $filename, 'public');
 
             $validated['logo'] = $path;
+        } else {
+            // Ne pas écraser le logo existant si aucun nouveau fichier
+            unset($validated['logo']);
         }
 
         /*
-        |--------------------------------------------------------------------------
+        |----------------------------------------------------------------------
         | UPDATE DATA
-        |--------------------------------------------------------------------------
+        |----------------------------------------------------------------------
         */
         $company->update($validated);
 
         /*
-        |--------------------------------------------------------------------------
-        | CLEAR CACHE
-        |--------------------------------------------------------------------------
+        |----------------------------------------------------------------------
+        | CLEAR CACHE (seulement l'ID — jamais l'objet Eloquent)
+        |----------------------------------------------------------------------
         */
-        Cache::forget('company');
+        Cache::forget('company_id');
 
         return back()->with(
             'success',
-            'Informations de l’entreprise mises à jour avec succès.'
+            'Informations de l\'entreprise mises à jour avec succès.'
         );
     }
 
@@ -101,10 +105,10 @@ class CompanyController extends Controller
         $company = $this->getCompany();
 
         $company->update([
-            'invoice_counter' => 1
+            'invoice_counter' => 1,
         ]);
 
-        Cache::forget('company');
+        Cache::forget('company_id');
 
         return back()->with(
             'success',
@@ -115,13 +119,16 @@ class CompanyController extends Controller
     /*
     |--------------------------------------------------------------------------
     | PRIVATE: GET OR CREATE COMPANY (ERP Mono Mode)
+    | On cache uniquement l'ID (scalaire), jamais l'objet Eloquent entier.
+    | Ainsi, après un update(), la relecture en DB retourne toujours les
+    | données fraîches (logo inclus).
     |--------------------------------------------------------------------------
     */
     private function getCompany(): Company
     {
-        return Cache::rememberForever('company', function () {
+        $id = Cache::rememberForever('company_id', function () {
 
-            return Company::first() ?? Company::create([
+            $company = Company::first() ?? Company::create([
                 'name'            => 'MauriERP',
                 'country'         => 'Mauritanie',
                 'currency'        => 'MRU',
@@ -131,6 +138,10 @@ class CompanyController extends Controller
                 'default_vat'     => 0,
                 'is_active'       => true,
             ]);
+
+            return $company->id;
         });
+
+        return Company::findOrFail($id);
     }
 }

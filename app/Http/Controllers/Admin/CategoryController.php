@@ -101,15 +101,16 @@ class CategoryController extends Controller
     | EDIT
     |--------------------------------------------------------------------------
     */
-    public function edit(Category $category)
-    {
-        $parents = Category::cached()
-            ->whereNull('parent_id')
-            ->where('id', '!=', $category->id);
+   public function edit(Category $category)
+{
+    session()->forget(['error', 'success']); // ← vide les flash avant d'afficher edit
 
-        return view('admin.categories.edit', compact('category', 'parents'));
-    }
+    $parents = Category::cached()
+        ->whereNull('parent_id')
+        ->where('id', '!=', $category->id);
 
+    return view('admin.categories.edit', compact('category', 'parents'));
+}
     /*
     |--------------------------------------------------------------------------
     | UPDATE

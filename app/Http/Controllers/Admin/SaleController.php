@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\Storage;
+
 class SaleController extends Controller
 {
     /*
@@ -20,60 +21,27 @@ class SaleController extends Controller
     | INDEX
     |--------------------------------------------------------------------------
     */
-  public function index(Request $request)
-{
-    /*
-    |--------------------------------------------------------------------------
-    | BASE QUERY (LOAD RELATIONS IMPORTANTES)
-    |--------------------------------------------------------------------------
-    */
-    $query = Sale::with([
-        'customer',
-        'items.product' //  OBLIGATOIRE POUR APPROVISIONNEMENT
-    ]);
+    public function index(Request $request)
+    {
+        $query = Sale::with(['customer', 'items.product']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | SEARCH
-    |--------------------------------------------------------------------------
-    */
-    if ($request->filled('search')) {
-        $query->where(function ($q) use ($request) {
+        if ($request->filled('search')) {
+            $query->where(function ($q) use ($request) {
+                $q->where('reference', 'like', '%' . $request->search . '%')
+                  ->orWhereHas('customer', function ($c) use ($request) {
+                      $c->where('name', 'like', '%' . $request->search . '%');
+                  });
+            });
+        }
 
-            $q->where('reference', 'like', '%' . $request->search . '%')
-              ->orWhereHas('customer', function ($c) use ($request) {
-                  $c->where('name', 'like', '%' . $request->search . '%');
-              });
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
 
-        });
+        $sales = $query->latest()->paginate(15)->withQueryString();
+
+        return view('admin.sales.index', compact('sales'));
     }
-
-    /*
-    |--------------------------------------------------------------------------
-    | STATUS FILTER
-    |--------------------------------------------------------------------------
-    */
-    if ($request->filled('status')) {
-        $query->where('status', $request->status);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | PAGINATION
-    |--------------------------------------------------------------------------
-    */
-    $sales = $query
-        ->latest()
-        ->paginate(15)
-        ->withQueryString();
-
-    /*
-    |--------------------------------------------------------------------------
-    | VIEW
-    |--------------------------------------------------------------------------
-    */
-    return view('admin.sales.index', compact('sales'));
-}
 
     /*
     |--------------------------------------------------------------------------
@@ -93,81 +61,58 @@ class SaleController extends Controller
     | STORE
     |--------------------------------------------------------------------------
     */
-public function store(Request $request)
-{
-    $request->validate([
-        'customer_id'           => 'required|exists:customers,id',
-        'sale_date'             => 'required|date',
-        'items'                 => 'required|array|min:1',
-        'items.*.product_id'    => 'required|exists:products,id',
-        'items.*.quantity'      => 'required|numeric|min:0.01',
-        'items.*.unit_price'    => 'required|numeric|min:0',
-    ]);
-
-    DB::transaction(function () use ($request) {
-
-        /*
-        |--------------------------------------------------------------------------
-        |  CHECK STOCK BEFORE CREATE SALE
-        |--------------------------------------------------------------------------
-        */
-        foreach ($request->items as $item) {
-
-            $product = Product::findOrFail($item['product_id']);
-
-            // seulement produit physique
-            if ($product->type === 'physical') {
-
-                if ($product->stock_quantity < $item['quantity']) {
-                    throw ValidationException::withMessages([
-                        'stock' => "Stock insuffisant pour le produit : {$product->name}"
-                    ]);
-                }
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | CREATE SALE
-        |--------------------------------------------------------------------------
-        */
-        $sale = Sale::create([
-            'customer_id' => $request->customer_id,
-            'sale_date'   => $request->sale_date,
-            'notes'       => $request->notes,
-            'status'      => 'draft',
-            'paid_amount' => 0,
+    public function store(Request $request)
+    {
+        $request->validate([
+            'customer_id'           => 'required|exists:customers,id',
+            'sale_date'             => 'required|date',
+            'items'                 => 'required|array|min:1',
+            'items.*.product_id'    => 'required|exists:products,id',
+            'items.*.quantity'      => 'required|numeric|min:0.01',
+            'items.*.unit_price'    => 'required|numeric|min:0',
         ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | CREATE ITEMS
-        |--------------------------------------------------------------------------
-        */
-        foreach ($request->items as $item) {
+        DB::transaction(function () use ($request) {
 
-            SaleItem::create([
-                'sale_id'       => $sale->id,
-                'product_id'    => $item['product_id'],
-                'quantity'      => $item['quantity'],
-                'unit_price'    => $item['unit_price'],
-                'vat_rate'      => $item['vat_rate'] ?? 0,
-                'discount_rate' => $item['discount_rate'] ?? 0,
+            foreach ($request->items as $item) {
+                $product = Product::findOrFail($item['product_id']);
+                if ($product->type === 'physical') {
+                    if ($product->stock_quantity < $item['quantity']) {
+                        throw ValidationException::withMessages([
+                            'stock' => "Stock insuffisant pour le produit : {$product->name}"
+                        ]);
+                    }
+                }
+            }
+
+            $sale = Sale::create([
+                'customer_id' => $request->customer_id,
+                'sale_date'   => $request->sale_date,
+                'notes'       => $request->notes,
+                'status'      => 'draft',
+                'paid_amount' => 0,
             ]);
-        }
 
-        /*
-        |--------------------------------------------------------------------------
-        | CALCULATE TOTALS
-        |--------------------------------------------------------------------------
-        */
-        $sale->calculateTotals();
-    });
+            foreach ($request->items as $item) {
+                SaleItem::create([
+                    'sale_id'       => $sale->id,
+                    'product_id'    => $item['product_id'],
+                    'quantity'      => $item['quantity'],
+                    'unit_price'    => $item['unit_price'],
+                    'vat_rate'      => $item['vat_rate'] ?? 0,
+                    'discount_rate' => $item['discount_rate'] ?? 0,
+                ]);
+            }
 
-    return redirect()
-        ->route('admin.sales.index')
-        ->with('success', 'Vente créée avec succès.');
-}
+            $sale->calculateTotals();
+        });
+
+        DashboardController::clearCache(auth()->user());
+
+        return redirect()
+            ->route('admin.sales.index')
+            ->with('success', 'Vente créée avec succès.');
+    }
 
     /*
     |--------------------------------------------------------------------------
@@ -176,23 +121,12 @@ public function store(Request $request)
     */
     public function show(Sale $sale)
     {
-        $sale->load([
-            'customer',
-            'items.product',
-            'payments.cashRegister'
-        ]);
+        $sale->load(['customer', 'items.product', 'payments.cashRegister']);
 
-        $totalPaid = $sale->payments
-            ->where('status', 'confirmed')
-            ->sum('amount');
-
+        $totalPaid = $sale->payments->where('status', 'confirmed')->sum('amount');
         $remaining = max(0, $sale->total_amount - $totalPaid);
 
-        return view('admin.sales.show', compact(
-            'sale',
-            'totalPaid',
-            'remaining'
-        ));
+        return view('admin.sales.show', compact('sale', 'totalPaid', 'remaining'));
     }
 
     /*
@@ -235,7 +169,6 @@ public function store(Request $request)
         ]);
 
         DB::transaction(function () use ($request, $sale) {
-
             $sale->update([
                 'customer_id' => $request->customer_id,
                 'sale_date'   => $request->sale_date,
@@ -258,6 +191,8 @@ public function store(Request $request)
             $sale->calculateTotals();
         });
 
+        DashboardController::clearCache(auth()->user());
+
         return redirect()
             ->route('admin.sales.index')
             ->with('success', 'Vente mise à jour.');
@@ -272,6 +207,7 @@ public function store(Request $request)
     {
         try {
             $sale->confirm();
+            DashboardController::clearCache(auth()->user());
             return back()->with('success', 'Vente confirmée.');
         } catch (\Exception $e) {
             return back()->with('error', $e->getMessage());
@@ -297,6 +233,7 @@ public function store(Request $request)
 
         try {
             $sale->registerPayment($request->amount, $cashRegister);
+            DashboardController::clearCache(auth()->user());
             return back()->with('success', 'Paiement enregistré.');
         } catch (\Exception $e) {
             return back()->with('error', $e->getMessage());
@@ -315,6 +252,7 @@ public function store(Request $request)
         }
 
         $sale->update(['status' => 'cancelled']);
+        DashboardController::clearCache(auth()->user());
 
         return back()->with('success', 'Vente annulée.');
     }
@@ -331,6 +269,7 @@ public function store(Request $request)
         }
 
         $sale->delete();
+        DashboardController::clearCache(auth()->user());
 
         return redirect()
             ->route('admin.sales.index')
@@ -342,58 +281,18 @@ public function store(Request $request)
     | PDF
     |--------------------------------------------------------------------------
     */
-public function pdf(Sale $sale)
-{
-    /*
-    |--------------------------------------------------------------------------
-    | LOAD RELATIONS
-    |--------------------------------------------------------------------------
-    */
-    $sale->load([
-        'customer',
-        'items.product'
-    ]);
+    public function pdf(Sale $sale)
+    {
+        $sale->load(['customer', 'items.product']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | GENERATE PDF
-    |--------------------------------------------------------------------------
-    */
-    $pdf = Pdf::loadView(
-        'admin.sales.pdf',
-        compact('sale')
-    )->setPaper('a4','portrait');
+        $pdf = Pdf::loadView('admin.sales.pdf', compact('sale'))
+            ->setPaper('a4', 'portrait');
 
-    /*
-    |--------------------------------------------------------------------------
-    | FILE NAME
-    |--------------------------------------------------------------------------
-    */
-    $filename = 'FACTURE-' . ($sale->reference ?? $sale->id) . '.pdf';
+        $filename = 'FACTURE-' . ($sale->reference ?? $sale->id) . '.pdf';
 
-    /*
-    |--------------------------------------------------------------------------
-    | CREATE DIRECTORY IF NOT EXISTS
-    |--------------------------------------------------------------------------
-    */
-    Storage::disk('public')->makeDirectory('invoices');
+        Storage::disk('public')->makeDirectory('invoices');
+        Storage::disk('public')->put('invoices/' . $filename, $pdf->output());
 
-    /*
-    |--------------------------------------------------------------------------
-    | SAVE PDF
-    |--------------------------------------------------------------------------
-    */
-    Storage::disk('public')->put(
-        'invoices/'.$filename,
-        $pdf->output()
-    );
-
-    /*
-    |--------------------------------------------------------------------------
-    | DISPLAY PDF
-    |--------------------------------------------------------------------------
-    */
-    return $pdf->stream($filename);
-}
-
+        return $pdf->stream($filename);
+    }
 }

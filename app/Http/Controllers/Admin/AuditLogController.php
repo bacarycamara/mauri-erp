@@ -43,7 +43,16 @@ class AuditLogController extends Controller
         $users   = User::select('id', 'name')->orderBy('name')->get();
         $actions = AuditLog::select('action')->distinct()->pluck('action');
 
-        return view('admin.audit-logs.index', compact('logs', 'users', 'actions'));
+        // ✅ Stats pour les compteurs (toujours sur TOUTE la table, pas filtrée)
+        $stats = AuditLog::selectRaw('action, count(*) as total')
+                         ->groupBy('action')
+                         ->pluck('total', 'action')
+                         ->toArray();
+
+        // ✅ Total global pour "· X entrées"
+        $total = AuditLog::count();
+
+        return view('admin.audit-logs.index', compact('logs', 'users', 'actions', 'stats', 'total'));
     }
 
 
